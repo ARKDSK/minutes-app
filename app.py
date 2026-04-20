@@ -9,6 +9,23 @@ import uuid
 
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+APP_PASSWORD = st.secrets["APP_PASSWORD"]
+
+# パスワード認証
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+
+if not st.session_state["authenticated"]:
+    st.set_page_config(page_title="議事録検索", page_icon="📋")
+    st.title("📋 議事録検索システム")
+    pw = st.text_input("パスワードを入力してください", type="password")
+    if st.button("ログイン"):
+        if pw == APP_PASSWORD:
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("パスワードが違います")
+    st.stop()
 
 @st.cache_resource
 def get_supabase():
