@@ -1,6 +1,6 @@
 streamlit
 supabase
 sentence-transformers
-faster-whisper
+groq
 janome
 numpy

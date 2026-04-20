@@ -1,7 +1,7 @@
 import streamlit as st
 from supabase import create_client
 from sentence_transformers import SentenceTransformer
-from faster_whisper import WhisperModel
+from groq import Groq
 from janome.tokenizer import Tokenizer
 from collections import Counter
 from datetime import datetime
@@ -13,6 +13,7 @@ import os
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 APP_PASSWORD = st.secrets["APP_PASSWORD"]
+GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 
 # パスワード認証
 if "authenticated" not in st.session_state:
@@ -38,9 +39,14 @@ def get_supabase():
 def get_model():
     return SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
 
-@st.cache_resource
-def get_whisper():
-    return WhisperModel("tiny", device="cpu", compute_type="int8")
+def transcribe_audio(file_bytes, filename):
+    client = Groq(api_key=GROQ_API_KEY)
+    transcription = client.audio.transcriptions.create(
+        file=(filename, file_bytes),
+        model="whisper-large-v3-turbo",
+        language="ja"
+    )
+    return transcription.text
 
 db = get_supabase()
 model = get_model()
@@ -125,17 +131,9 @@ with tab1:
         type=["mp3", "wav", "m4a", "mp4", "ogg", "webm"])
     if audio_file:
         if st.button("📝 文字起こしする"):
-            with st.spinner("文字起こし中...（音声の長さによって数分かかります）"):
-                with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(audio_file.name)[1]) as tmp:
-                    tmp.write(audio_file.read())
-                    tmp_path = tmp.name
-                try:
-                    whisper = get_whisper()
-                    segments, _ = whisper.transcribe(tmp_path, language="ja")
-                    transcribed = "".join([seg.text for seg in segments])
-                    st.session_state[f"transcribed_{fk}"] = transcribed
-                finally:
-                    os.unlink(tmp_path)
+            with st.spinner("文字起こし中..."):
+                transcribed = transcribe_audio(audio_file.read(), audio_file.name)
+                st.session_state[f"transcribed_{fk}"] = transcribed
                 st.rerun()
 
     # 文字起こし結果があれば content に反映
