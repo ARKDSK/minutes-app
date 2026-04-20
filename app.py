@@ -1,11 +1,14 @@
 import streamlit as st
 from supabase import create_client
 from sentence_transformers import SentenceTransformer
+from faster_whisper import WhisperModel
 from janome.tokenizer import Tokenizer
 from collections import Counter
 from datetime import datetime
 import numpy as np
 import uuid
+import tempfile
+import os
 
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
@@ -34,6 +37,10 @@ def get_supabase():
 @st.cache_resource
 def get_model():
     return SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+
+@st.cache_resource
+def get_whisper():
+    return WhisperModel("tiny", device="cpu", compute_type="int8")
 
 db = get_supabase()
 model = get_model()
@@ -112,6 +119,28 @@ with tab1:
         title = st.text_input("タイトル（例：週次定例 4/20）", key=f"title_{fk}")
     with col2:
         participants = st.text_input("参加者（カンマ区切り）", key=f"participants_{fk}")
+
+    # 音声ファイルから文字起こし
+    audio_file = st.file_uploader("🎙️ 音声ファイルから文字起こし（任意）",
+        type=["mp3", "wav", "m4a", "mp4", "ogg", "webm"])
+    if audio_file:
+        if st.button("📝 文字起こしする"):
+            with st.spinner("文字起こし中...（音声の長さによって数分かかります）"):
+                with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(audio_file.name)[1]) as tmp:
+                    tmp.write(audio_file.read())
+                    tmp_path = tmp.name
+                try:
+                    whisper = get_whisper()
+                    segments, _ = whisper.transcribe(tmp_path, language="ja")
+                    transcribed = "".join([seg.text for seg in segments])
+                    st.session_state[f"transcribed_{fk}"] = transcribed
+                finally:
+                    os.unlink(tmp_path)
+                st.rerun()
+
+    # 文字起こし結果があれば content に反映
+    if f"transcribed_{fk}" in st.session_state:
+        st.session_state[f"content_{fk}"] = st.session_state.pop(f"transcribed_{fk}")
 
     content = st.text_area("議事録内容", height=300,
         placeholder="ここに議事録の内容を貼り付けてください...", key=f"content_{fk}")

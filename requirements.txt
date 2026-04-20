@@ -1,5 +1,6 @@
 streamlit
 supabase
 sentence-transformers
+faster-whisper
 janome
 numpy
