@@ -1,0 +1,5 @@
+streamlit
+supabase
+sentence-transformers
+janome
+numpy
