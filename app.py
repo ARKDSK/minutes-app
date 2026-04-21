@@ -419,9 +419,7 @@ with tab2:
 # ---- 一覧 ----
 with tab3:
     st.header("議事録一覧")
-    rows = db.table("minutes").select(
-        "id,date_str,title,participants,tags,content,analysis"
-    ).execute().data
+    rows = db.table("minutes").select("*").execute().data
     rows = sorted(rows, key=lambda r: r.get("date_str", ""), reverse=True)
     st.write(f"登録件数: **{len(rows)}件**")
 
