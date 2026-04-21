@@ -335,18 +335,26 @@ with tab1:
     if st.button("💾 保存する", type="primary"):
         if title and content:
             with st.spinner("保存・分析中...（初回は少し時間がかかります）"):
+                row_id = str(uuid.uuid4())
                 embedding = model.encode(content).tolist()
-                analysis = analyze_content(content)
+                # Step1: 既存カラムのみでINSERT
                 db.table("minutes").insert({
-                    "id": str(uuid.uuid4()),
+                    "id": row_id,
                     "date_str": str(date),
                     "title": title,
                     "participants": participants,
                     "tags": tags,
                     "content": content,
                     "embedding": embedding,
-                    "analysis": analysis
                 }).execute()
+                # Step2: 分析を生成してUPDATE
+                try:
+                    analysis = analyze_content(content)
+                    db.table("minutes").update(
+                        {"analysis": analysis}
+                    ).eq("id", row_id).execute()
+                except Exception:
+                    pass  # 分析失敗は後から「分析を生成する」で対応可
             st.session_state["form_key"] = fk + 1
             st.success(f"✅ 「{title}」を保存しました！")
             st.rerun()
@@ -464,7 +472,6 @@ with tab3:
                     if st.button("💾 保存", type="primary", key=f"save_{doc_id}"):
                         with st.spinner("保存・分析中..."):
                             embedding = model.encode(e_content).tolist()
-                            new_analysis = analyze_content(e_content)
                             db.table("minutes").update({
                                 "date_str": str(e_date),
                                 "title": e_title,
@@ -472,8 +479,14 @@ with tab3:
                                 "tags": e_tags,
                                 "content": e_content,
                                 "embedding": embedding,
-                                "analysis": new_analysis
                             }).eq("id", doc_id).execute()
+                            try:
+                                new_analysis = analyze_content(e_content)
+                                db.table("minutes").update(
+                                    {"analysis": new_analysis}
+                                ).eq("id", doc_id).execute()
+                            except Exception:
+                                pass
                         st.session_state[f"editing_{doc_id}"] = False
                         st.session_state.pop(f"pending_tags_{doc_id}", None)
                         st.rerun()
