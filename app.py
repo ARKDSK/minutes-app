@@ -162,20 +162,24 @@ with tab1:
 
     if st.button("💾 保存する", type="primary"):
         if title and content:
-            with st.spinner("保存中..."):
-                embedding = model.encode(content).tolist()
-                db.table("minutes").insert({
-                    "id": str(uuid.uuid4()),
-                    "date_str": str(date),
-                    "title": title,
-                    "participants": participants,
-                    "tags": tags,
-                    "content": content,
-                    "embedding": embedding
-                }).execute()
-            st.session_state["form_key"] = fk + 1
-            st.success(f"✅ 「{title}」を保存しました！")
-            st.rerun()
+            try:
+                with st.spinner("保存中..."):
+                    embedding = model.encode(content).tolist()
+                    db.table("minutes").insert({
+                        "id": str(uuid.uuid4()),
+                        "date_str": str(date),
+                        "title": title,
+                        "participants": participants,
+                        "tags": tags,
+                        "content": content,
+                        "embedding": embedding
+                    }).execute()
+                st.session_state["form_key"] = fk + 1
+                st.success(f"✅ 「{title}」を保存しました！")
+                st.rerun()
+            except Exception as e:
+                st.error(f"保存エラー: {type(e).__name__}: {e}")
+                st.error(f"詳細: {getattr(e, 'message', '')} / {getattr(e, 'code', '')} / {getattr(e, 'details', '')}")
         else:
             st.error("タイトルと内容は必須です")
 
