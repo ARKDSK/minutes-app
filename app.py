@@ -80,7 +80,7 @@ def cosine_sim(a, b):
 
 def search_minutes(query, n=5, date_from=None, date_to=None, tag_filter=None):
     query_emb = model.encode(query).tolist()
-    rows = db.table("minutes").select("*").execute().data
+    rows = db.table("minutes").select("id,date_str,title,participants,tags,content,embedding").execute().data
     if date_from:
         rows = [r for r in rows if r.get("date_str", "") >= str(date_from)]
     if date_to:
