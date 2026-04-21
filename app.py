@@ -9,6 +9,7 @@ import numpy as np
 import uuid
 import tempfile
 import os
+import json
 
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
@@ -74,13 +75,63 @@ def extract_tags(text, top_n=5):
     counts = Counter(nouns)
     return ", ".join([w for w, _ in counts.most_common(top_n)])
 
+# 議事録から決定事項・保留事項・ToDoを抽出
+def extract_analysis(text):
+    client = Groq(api_key=GROQ_API_KEY)
+    prompt = f"""以下の議事録から「決定事項」「保留事項」「ToDo」を抽出してください。
+各項目は短い箇条書き（1項目20〜60文字程度）にしてください。
+該当が無い場合は空配列にしてください。
+JSON形式のみで返答し、説明文は一切含めないでください。
+
+議事録:
+{text}
+
+出力フォーマット:
+{{"decisions": ["..."], "pending": ["..."], "todos": ["..."]}}"""
+    try:
+        resp = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.2,
+        )
+        data = json.loads(resp.choices[0].message.content)
+        return {
+            "decisions": data.get("decisions", []) or [],
+            "pending": data.get("pending", []) or [],
+            "todos": data.get("todos", []) or [],
+        }
+    except Exception as e:
+        return {"decisions": [], "pending": [], "todos": [], "error": str(e)}
+
+def render_analysis(analysis):
+    if not analysis or not isinstance(analysis, dict):
+        return
+    decisions = analysis.get("decisions") or []
+    pending = analysis.get("pending") or []
+    todos = analysis.get("todos") or []
+    if not (decisions or pending or todos):
+        return
+    if decisions:
+        st.markdown("**✅ 決定事項**")
+        for x in decisions:
+            st.markdown(f"- {x}")
+    if pending:
+        st.markdown("**⏸️ 保留事項**")
+        for x in pending:
+            st.markdown(f"- {x}")
+    if todos:
+        st.markdown("**📌 ToDo**")
+        for x in todos:
+            st.markdown(f"- {x}")
+
 def cosine_sim(a, b):
     a, b = np.array(a), np.array(b)
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
 
 def search_minutes(query, n=5, date_from=None, date_to=None, tag_filter=None):
     query_emb = model.encode(query).tolist()
-    rows = db.table("minutes").select("id,date_str,title,participants,tags,content,embedding").execute().data
+    rows = db.table("minutes").select("id,date_str,title,participants,tags,content,embedding,analysis").execute().data
     if date_from:
         rows = [r for r in rows if r.get("date_str", "") >= str(date_from)]
     if date_to:
@@ -163,8 +214,9 @@ with tab1:
     if st.button("💾 保存する", type="primary"):
         if title and content:
             try:
-                with st.spinner("保存中..."):
+                with st.spinner("保存中（要点を抽出しています）..."):
                     embedding = model.encode(content).tolist()
+                    analysis = extract_analysis(content)
                     db.table("minutes").insert({
                         "id": str(uuid.uuid4()),
                         "date_str": str(date),
@@ -172,7 +224,8 @@ with tab1:
                         "participants": participants,
                         "tags": tags,
                         "content": content,
-                        "embedding": embedding
+                        "embedding": embedding,
+                        "analysis": analysis
                     }).execute()
                 st.session_state["form_key"] = fk + 1
                 st.success(f"✅ 「{title}」を保存しました！")
@@ -236,6 +289,7 @@ with tab2:
                             st.write(f"**参加者**: {row['participants']}")
                         if row.get("tags"):
                             st.write(f"**タグ**: {row['tags']}")
+                        render_analysis(row.get("analysis"))
                         st.markdown("---")
                         st.write(row["content"])
             else:
@@ -244,7 +298,7 @@ with tab2:
 # ---- 一覧 ----
 with tab3:
     st.header("議事録一覧")
-    rows = db.table("minutes").select("id,date_str,title,participants,tags,content").execute().data
+    rows = db.table("minutes").select("id,date_str,title,participants,tags,content,analysis").execute().data
     rows = sorted(rows, key=lambda r: r.get("date_str", ""), reverse=True)
     st.write(f"登録件数: **{len(rows)}件**")
 
@@ -281,15 +335,17 @@ with tab3:
                 save_col, cancel_col = st.columns(2)
                 with save_col:
                     if st.button("💾 保存", type="primary", key=f"save_{doc_id}"):
-                        with st.spinner("保存中..."):
+                        with st.spinner("保存中（要点を抽出しています）..."):
                             embedding = model.encode(e_content).tolist()
+                            analysis = extract_analysis(e_content)
                             db.table("minutes").update({
                                 "date_str": str(e_date),
                                 "title": e_title,
                                 "participants": e_participants,
                                 "tags": e_tags,
                                 "content": e_content,
-                                "embedding": embedding
+                                "embedding": embedding,
+                                "analysis": analysis
                             }).eq("id", doc_id).execute()
                         st.session_state[f"editing_{doc_id}"] = False
                         st.session_state.pop(f"pending_tags_{doc_id}", None)
@@ -303,6 +359,7 @@ with tab3:
                     st.write(f"**参加者**: {row['participants']}")
                 if row.get("tags"):
                     st.write(f"**タグ**: {row['tags']}")
+                render_analysis(row.get("analysis"))
                 st.markdown("---")
                 st.write(row["content"])
 
