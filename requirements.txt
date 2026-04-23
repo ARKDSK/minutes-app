@@ -4,3 +4,5 @@ sentence-transformers
 groq
 janome
 numpy
+faster-whisper
+pyannote.audio
