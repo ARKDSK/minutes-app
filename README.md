@@ -29,11 +29,20 @@ SUPABASE_URL="..."
 SUPABASE_KEY="..."
 APP_PASSWORD="..."
 GROQ_API_KEY="..."
-HUGGINGFACE_TOKEN="..." # 話者分離を有効化する場合
+HUGGINGFACE_TOKEN="..."   # 話者分離を有効化する場合
+WHISPER_MODEL_SIZE="small" # 任意: tiny / base / small / medium / large-v3（既定: small）
 ```
 
 ## ローカル音声解析について
 
-- ローカル優先は `faster-whisper` を使用（CPU 実行）。
+- ローカル優先は `faster-whisper` を使用（CPU int8 実行、既定 `small` モデル）。
+- より高精度にしたい場合は `WHISPER_MODEL_SIZE` を `medium` / `large-v3` に変更可能。
 - 話者分離は `pyannote.audio` を利用し、`HUGGINGFACE_TOKEN` がある場合に有効化。
 - ローカル解析に失敗した場合は Groq Whisper API に自動フォールバックします。
+
+## パフォーマンス最適化
+
+- Whisper / pyannote / Groq / SentenceTransformer / Janome は `@st.cache_resource` で常駐化。
+- 議事録一覧は軽量カラムのみ取得し、詳細画面でのみフル取得。保存時にキャッシュを無効化。
+- コサイン類似度はベクトル化した NumPy 行列積で一括計算。
+- 分析抽出と3段階要約は 1 回の LLM 呼び出しに統合し、保存時の待ち時間を約半減。
