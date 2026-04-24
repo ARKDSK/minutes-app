@@ -1,0 +1,19 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: minutes-app-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: minutes_app
+      MYSQL_USER: minutes_user
+      MYSQL_PASSWORD: minutes_pass
+      MYSQL_ROOT_PASSWORD: root
+      TZ: Asia/Tokyo
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: --default-authentication-plugin=mysql_native_password
+
+volumes:
+  mysql_data:
