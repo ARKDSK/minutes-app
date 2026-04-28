@@ -10,6 +10,8 @@ import uuid
 import tempfile
 import os
 import json
+import csv
+from io import StringIO
 
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
@@ -125,6 +127,214 @@ def render_analysis(analysis):
         for x in todos:
             st.markdown(f"- {x}")
 
+
+
+REQUIRED_COMPANY_FIELDS = [
+    "tdb_company_code",
+    "corporate_number",
+    "company_name",
+    "company_name_kana",
+    "postal_code",
+    "address",
+    "prefecture",
+    "city",
+    "phone_number",
+    "website_url",
+    "industry_code_main",
+    "industry_name_main",
+    "industry_code_sub",
+    "industry_name_sub",
+    "business_description",
+    "founded_date",
+    "established_date",
+    "capital_amount",
+    "employee_count",
+    "last_updated_at",
+]
+
+
+def to_float(val):
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val).strip()
+    if not s:
+        return None
+    for token in [",", "円", "人", "百万円", "千円", "%"]:
+        s = s.replace(token, "")
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+def to_int(val):
+    x = to_float(val)
+    return int(x) if x is not None else None
+
+
+def parse_company_dataset(uploaded_file):
+    if not uploaded_file:
+        return []
+    raw = uploaded_file.read()
+    name = uploaded_file.name.lower()
+
+    if name.endswith(".json"):
+        data = json.loads(raw.decode("utf-8", errors="ignore"))
+        if isinstance(data, dict):
+            data = [data]
+        return [dict(r) for r in data if isinstance(r, dict)]
+
+    text = raw.decode("utf-8", errors="ignore")
+    delimiter = "\t" if name.endswith(".tsv") else ","
+    reader = csv.DictReader(StringIO(text), delimiter=delimiter)
+    return [dict(row) for row in reader]
+
+
+def estimate_succession_score(row):
+    score = 0
+    reasons = []
+
+    rep_age = to_int(row.get("representative_age"))
+    if rep_age is not None and rep_age >= 60:
+        score += 35
+        reasons.append(f"代表者年齢が高め（{rep_age}歳）")
+
+    successor_flag = str(row.get("successor_exists", "")).strip().lower()
+    if successor_flag in {"0", "false", "なし", "no"}:
+        score += 35
+        reasons.append("後継者不在")
+
+    employee_count = to_int(row.get("employee_count"))
+    if employee_count is not None and employee_count <= 100:
+        score += 10
+        reasons.append("中小規模で承継ニーズが高い可能性")
+
+    years = to_int(row.get("business_years"))
+    if years is not None and years >= 20:
+        score += 20
+        reasons.append("事業歴が長く承継タイミングの可能性")
+
+    return min(score, 100), reasons
+
+
+def estimate_financial_risk_score(row):
+    # 0=低リスク, 100=高リスク
+    risk = 30
+    reasons = []
+
+    tdb_score = to_int(row.get("tdb_score") or row.get("credit_score") or row.get("評点"))
+    if tdb_score is not None:
+        if tdb_score < 45:
+            risk += 35
+            reasons.append(f"評点が低い（{tdb_score}）")
+        elif tdb_score < 55:
+            risk += 15
+            reasons.append(f"評点が中位（{tdb_score}）")
+        else:
+            risk -= 10
+            reasons.append(f"評点が相対的に安定（{tdb_score}）")
+
+    operating_profit = to_float(row.get("operating_profit"))
+    if operating_profit is not None and operating_profit < 0:
+        risk += 25
+        reasons.append("営業赤字")
+
+    debt = to_float(row.get("interest_bearing_debt"))
+    cash = to_float(row.get("cash_and_deposits"))
+    if debt is not None and cash is not None and debt > cash * 2:
+        risk += 20
+        reasons.append("有利子負債が現預金を大きく超過")
+
+    return min(max(risk, 0), 100), reasons
+
+
+def classify_risk(risk_score):
+    if risk_score >= 70:
+        return "高"
+    if risk_score >= 45:
+        return "中"
+    return "低"
+
+
+def estimate_priority_score(row, succession_score, risk_score):
+    # 0-100 (高いほど優先アプローチ)
+    score = 40
+    reasons = []
+
+    sales = to_float(row.get("sales") or row.get("売上高"))
+    if sales is not None:
+        if 300 <= sales <= 5000:
+            score += 20
+            reasons.append("売上規模が初期買収対象に適合")
+        elif sales < 100:
+            score -= 10
+            reasons.append("売上規模が小さめ")
+
+    employee_count = to_int(row.get("employee_count"))
+    if employee_count is not None and 20 <= employee_count <= 300:
+        score += 10
+        reasons.append("PMI負荷が比較的コントロールしやすい人員規模")
+
+    score += int(succession_score * 0.25)
+    score -= int(risk_score * 0.20)
+
+    if risk_score >= 75:
+        score -= 15
+        reasons.append("財務・信用リスクが高く優先度調整")
+
+    return min(max(score, 0), 100), reasons
+
+
+def propose_next_actions(priority_score, risk_level, succession_score):
+    actions = []
+    if priority_score >= 70:
+        actions.append("1週間以内にアプローチ候補として担当者を割当")
+        actions.append("NDA打診前提で初回面談仮説を作成")
+    elif priority_score >= 50:
+        actions.append("追加情報取得（CCR詳細、決算、銀行取引情報）")
+    else:
+        actions.append("四半期ウォッチリストに登録し再評価")
+
+    if succession_score >= 60:
+        actions.append("事業承継ニーズ確認のため代表者ヒアリング項目を準備")
+
+    if risk_level == "高":
+        actions.append("先行して財務DD（資金繰り・債務）論点を精査")
+    elif risk_level == "中":
+        actions.append("簡易財務レビューと税務論点の棚卸しを実施")
+    else:
+        actions.append("事業シナジー仮説とPMI初期計画を先行検討")
+    return actions
+
+
+def evaluate_ma_candidates(rows):
+    evaluated = []
+    for row in rows:
+        succession_score, succession_reasons = estimate_succession_score(row)
+        financial_risk, risk_reasons = estimate_financial_risk_score(row)
+        priority_score, priority_reasons = estimate_priority_score(row, succession_score, financial_risk)
+        risk_level = classify_risk(financial_risk)
+
+        is_candidate = priority_score >= 50 or succession_score >= 60
+        evaluated.append({
+            **row,
+            "company_name": row.get("company_name") or row.get("商号") or "不明",
+            "succession_score": succession_score,
+            "financial_risk_score": financial_risk,
+            "financial_risk_level": risk_level,
+            "priority_score": priority_score,
+            "is_candidate": is_candidate,
+            "candidate_reason": " / ".join((succession_reasons + priority_reasons)[:3]) or "情報不足",
+            "risk_reason": " / ".join(risk_reasons[:3]) or "情報不足",
+            "next_actions": propose_next_actions(priority_score, risk_level, succession_score),
+        })
+
+    evaluated = sorted(evaluated, key=lambda x: x["priority_score"], reverse=True)
+    return evaluated
+
+
 def cosine_sim(a, b):
     a, b = np.array(a), np.array(b)
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
@@ -163,7 +373,7 @@ def get_all_dates():
 st.set_page_config(page_title="議事録検索", page_icon="📋", layout="wide")
 st.title("📋 議事録検索システム")
 
-tab1, tab2, tab3 = st.tabs(["📝 議事録を追加", "🔍 検索", "📄 一覧"])
+tab1, tab2, tab3, tab4 = st.tabs(["📝 議事録を追加", "🔍 検索", "📄 一覧", "🏢 買収分析"])
 
 # ---- 議事録を追加 ----
 with tab1:
@@ -372,3 +582,74 @@ with tab3:
                     if st.button("🗑️ 削除", key=f"del_{doc_id}"):
                         db.table("minutes").delete().eq("id", doc_id).execute()
                         st.rerun()
+
+
+# ---- 買収分析 ----
+with tab4:
+    st.header("M&A候補抽出・評価（帝国データ向け）")
+    st.caption("候補抽出・事業承継判定・リスク判定・優先順位算出・次アクション提示を実行します。")
+
+    st.markdown("**保存・表示する企業基本情報（推奨カラム）**")
+    st.code("\n".join(REQUIRED_COMPANY_FIELDS), language="text")
+
+    uploaded = st.file_uploader(
+        "企業一覧データをアップロード（CSV / TSV / JSON）",
+        type=["csv", "tsv", "json"],
+        key="ma_company_dataset"
+    )
+
+    if st.button("📊 候補抽出と評価を実行", type="primary"):
+        if uploaded is None:
+            st.warning("先に企業一覧ファイルをアップロードしてください。")
+        else:
+            try:
+                rows = parse_company_dataset(uploaded)
+            except Exception as e:
+                st.error(f"ファイル読み込みエラー: {e}")
+                rows = []
+
+            if not rows:
+                st.warning("データを読み取れませんでした。ヘッダー行やJSON構造を確認してください。")
+            else:
+                evaluated = evaluate_ma_candidates(rows)
+                candidates = [r for r in evaluated if r["is_candidate"]]
+                missings = [f for f in REQUIRED_COMPANY_FIELDS if f not in rows[0].keys()]
+
+                c1, c2, c3 = st.columns(3)
+                c1.metric("総企業数", len(evaluated))
+                c2.metric("買収候補数", len(candidates))
+                c3.metric("候補比率", f"{(len(candidates)/len(evaluated))*100:.1f}%")
+
+                if missings:
+                    st.warning("推奨カラム不足: " + ", ".join(missings))
+
+                st.subheader("候補企業ランキング")
+                ranking = [{
+                    "company_name": r["company_name"],
+                    "priority_score": r["priority_score"],
+                    "succession_score": r["succession_score"],
+                    "financial_risk_score": r["financial_risk_score"],
+                    "financial_risk_level": r["financial_risk_level"],
+                    "industry_name_main": r.get("industry_name_main", ""),
+                    "prefecture": r.get("prefecture", ""),
+                    "candidate_reason": r["candidate_reason"],
+                } for r in evaluated[:100]]
+                st.dataframe(ranking, use_container_width=True)
+
+                st.subheader("候補企業の詳細アクション")
+                for idx, r in enumerate(candidates[:20], start=1):
+                    with st.expander(f"{idx}. {r['company_name']}（優先度: {r['priority_score']}）"):
+                        st.write(f"**事業承継候補スコア**: {r['succession_score']}")
+                        st.write(f"**財務・信用リスク**: {r['financial_risk_score']}（{r['financial_risk_level']}）")
+                        st.write(f"**候補理由**: {r['candidate_reason']}")
+                        st.write(f"**リスク要約**: {r['risk_reason']}")
+                        st.markdown("**次アクション**")
+                        for action in r["next_actions"]:
+                            st.markdown(f"- {action}")
+
+                st.download_button(
+                    "評価結果JSONをダウンロード",
+                    data=json.dumps(evaluated, ensure_ascii=False, indent=2),
+                    file_name="ma_candidate_evaluation.json",
+                    mime="application/json"
+                )
