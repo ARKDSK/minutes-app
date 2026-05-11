@@ -10,6 +10,7 @@ import uuid
 import tempfile
 import os
 import json
+import time
 
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
@@ -76,9 +77,9 @@ def extract_tags(text, top_n=5):
     return ", ".join([w for w, _ in counts.most_common(top_n)])
 
 # 議事録から決定事項・保留事項・ToDoを抽出
-def extract_analysis(text):
+def _extract_one(text):
     client = Groq(api_key=GROQ_API_KEY)
-    prompt = f"""以下の議事録から「要約」「決定事項」「保留事項」「ToDo」を抽出してください。
+    prompt = f"""以下の議事録（または一部）から「要約」「決定事項」「保留事項」「ToDo」を抽出してください。
 - summary_short: 1〜2文の超短い要約（80文字以内）
 - summary_long: 段落形式の詳細要約（300〜500文字）
 - decisions/pending/todos: 短い箇条書き（1項目20〜60文字、該当無しは空配列）
@@ -89,21 +90,53 @@ JSON形式のみで返答し、説明文は一切含めないでください。
 
 出力フォーマット:
 {{"summary_short": "...", "summary_long": "...", "decisions": ["..."], "pending": ["..."], "todos": ["..."]}}"""
+    resp = client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0.2,
+    )
+    data = json.loads(resp.choices[0].message.content)
+    return {
+        "summary_short": data.get("summary_short", "") or "",
+        "summary_long": data.get("summary_long", "") or "",
+        "decisions": data.get("decisions", []) or [],
+        "pending": data.get("pending", []) or [],
+        "todos": data.get("todos", []) or [],
+    }
+
+def extract_analysis(text):
+    # Groq無料枠TPM 6000 を踏まえ、1チャンクあたり約2000文字（≒3000-4000トークン）まで
+    MAX_CHARS = 2000
     try:
-        resp = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-            temperature=0.2,
-        )
-        data = json.loads(resp.choices[0].message.content)
-        return {
-            "summary_short": data.get("summary_short", "") or "",
-            "summary_long": data.get("summary_long", "") or "",
-            "decisions": data.get("decisions", []) or [],
-            "pending": data.get("pending", []) or [],
-            "todos": data.get("todos", []) or [],
-        }
+        if len(text) <= MAX_CHARS:
+            return _extract_one(text)
+        # 長文：分割→抽出→マージ
+        chunks = [text[i:i+MAX_CHARS] for i in range(0, len(text), MAX_CHARS)]
+        merged = {"summary_short": "", "summary_long": "", "decisions": [], "pending": [], "todos": []}
+        summaries_long = []
+        summaries_short = []
+        progress = st.progress(0.0, text=f"長文のため{len(chunks)}分割で抽出中...")
+        for idx, ch in enumerate(chunks):
+            if idx > 0:
+                time.sleep(12)  # TPM制限対策
+            part = _extract_one(ch)
+            if part.get("summary_short"):
+                summaries_short.append(part["summary_short"])
+            if part.get("summary_long"):
+                summaries_long.append(part["summary_long"])
+            merged["decisions"].extend(part.get("decisions", []))
+            merged["pending"].extend(part.get("pending", []))
+            merged["todos"].extend(part.get("todos", []))
+            progress.progress((idx + 1) / len(chunks), text=f"抽出中 {idx+1}/{len(chunks)}")
+        progress.empty()
+        # 重複削除（順序保持）
+        merged["decisions"] = list(dict.fromkeys(merged["decisions"]))
+        merged["pending"] = list(dict.fromkeys(merged["pending"]))
+        merged["todos"] = list(dict.fromkeys(merged["todos"]))
+        merged["summary_short"] = summaries_short[0] if summaries_short else ""
+        merged["summary_long"] = "\n\n".join(summaries_long)
+        return merged
     except Exception as e:
         return {"summary_short": "", "summary_long": "", "decisions": [], "pending": [], "todos": [], "error": str(e)}
 
@@ -233,7 +266,6 @@ with tab1:
                 with st.spinner("保存中（要点を抽出しています）..."):
                     embedding = model.encode(content).tolist()
                     analysis = extract_analysis(content)
-                    st.write("🔍 抽出結果（デバッグ）:", analysis)
                     db.table("minutes").insert({
                         "id": str(uuid.uuid4()),
                         "date_str": str(date),
@@ -246,6 +278,7 @@ with tab1:
                     }).execute()
                 st.session_state["form_key"] = fk + 1
                 st.success(f"✅ 「{title}」を保存しました！")
+                st.rerun()
             except Exception as e:
                 st.error(f"保存エラー: {type(e).__name__}: {e}")
                 st.error(f"詳細: {getattr(e, 'message', '')} / {getattr(e, 'code', '')} / {getattr(e, 'details', '')}")
