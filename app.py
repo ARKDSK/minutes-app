@@ -233,6 +233,7 @@ with tab1:
                 with st.spinner("保存中（要点を抽出しています）..."):
                     embedding = model.encode(content).tolist()
                     analysis = extract_analysis(content)
+                    st.write("🔍 抽出結果（デバッグ）:", analysis)
                     db.table("minutes").insert({
                         "id": str(uuid.uuid4()),
                         "date_str": str(date),
@@ -245,7 +246,6 @@ with tab1:
                     }).execute()
                 st.session_state["form_key"] = fk + 1
                 st.success(f"✅ 「{title}」を保存しました！")
-                st.rerun()
             except Exception as e:
                 st.error(f"保存エラー: {type(e).__name__}: {e}")
                 st.error(f"詳細: {getattr(e, 'message', '')} / {getattr(e, 'code', '')} / {getattr(e, 'details', '')}")
