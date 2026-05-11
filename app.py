@@ -78,16 +78,17 @@ def extract_tags(text, top_n=5):
 # 議事録から決定事項・保留事項・ToDoを抽出
 def extract_analysis(text):
     client = Groq(api_key=GROQ_API_KEY)
-    prompt = f"""以下の議事録から「決定事項」「保留事項」「ToDo」を抽出してください。
-各項目は短い箇条書き（1項目20〜60文字程度）にしてください。
-該当が無い場合は空配列にしてください。
+    prompt = f"""以下の議事録から「要約」「決定事項」「保留事項」「ToDo」を抽出してください。
+- summary_short: 1〜2文の超短い要約（80文字以内）
+- summary_long: 段落形式の詳細要約（300〜500文字）
+- decisions/pending/todos: 短い箇条書き（1項目20〜60文字、該当無しは空配列）
 JSON形式のみで返答し、説明文は一切含めないでください。
 
 議事録:
 {text}
 
 出力フォーマット:
-{{"decisions": ["..."], "pending": ["..."], "todos": ["..."]}}"""
+{{"summary_short": "...", "summary_long": "...", "decisions": ["..."], "pending": ["..."], "todos": ["..."]}}"""
     try:
         resp = client.chat.completions.create(
             model="llama-3.1-8b-instant",
@@ -97,21 +98,30 @@ JSON形式のみで返答し、説明文は一切含めないでください。
         )
         data = json.loads(resp.choices[0].message.content)
         return {
+            "summary_short": data.get("summary_short", "") or "",
+            "summary_long": data.get("summary_long", "") or "",
             "decisions": data.get("decisions", []) or [],
             "pending": data.get("pending", []) or [],
             "todos": data.get("todos", []) or [],
         }
     except Exception as e:
-        return {"decisions": [], "pending": [], "todos": [], "error": str(e)}
+        return {"summary_short": "", "summary_long": "", "decisions": [], "pending": [], "todos": [], "error": str(e)}
 
 def render_analysis(analysis):
     if not analysis or not isinstance(analysis, dict):
         return
+    summary_short = analysis.get("summary_short") or ""
+    summary_long = analysis.get("summary_long") or ""
     decisions = analysis.get("decisions") or []
     pending = analysis.get("pending") or []
     todos = analysis.get("todos") or []
-    if not (decisions or pending or todos):
+    if not (summary_short or summary_long or decisions or pending or todos):
         return
+    if summary_short:
+        st.info(f"📝 {summary_short}")
+    if summary_long:
+        with st.expander("詳細要約を表示"):
+            st.write(summary_long)
     if decisions:
         st.markdown("**✅ 決定事項**")
         for x in decisions:
