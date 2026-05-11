@@ -79,22 +79,34 @@ def extract_tags(text, top_n=5):
 # 議事録から決定事項・保留事項・ToDoを抽出
 def _extract_one(text):
     client = Groq(api_key=GROQ_API_KEY)
-    prompt = f"""以下の議事録（または一部）から「要約」「決定事項」「保留事項」「ToDo」を抽出してください。
-- summary_short: 1〜2文の超短い要約（80文字以内）
-- summary_long: 段落形式の詳細要約（300〜500文字）
-- decisions/pending/todos: 短い箇条書き（1項目20〜60文字、該当無しは空配列）
-JSON形式のみで返答し、説明文は一切含めないでください。
+    system_prompt = """あなたは熟練した議事録要約者です。以下のルールを厳守してください:
+- 原文の文をそのままコピーしてはいけません。必ず自分の言葉で再構成すること
+- 「誰が・何を・なぜ」を補い、文脈が分かる文章にまとめる
+- 専門用語は残しつつ、冗長な言い回しや雑談は削る
+- 重複する内容は一つにまとめる
+- 出力は必ず指定したJSONフォーマットのみ（説明文・前置き・コードブロックは一切不要）"""
+    user_prompt = f"""以下の議事録から、次の項目を抽出・要約してください。
 
-議事録:
+【出力項目】
+- summary_short: 議事録全体の主旨を1〜2文で表す要約（60〜100文字、原文の抜き書きは禁止）
+- summary_long: 議事録の流れと結論が分かる詳細要約（300〜500文字、複数段落可、必ず自分の言葉で再構成）
+- decisions: 会議で確定した結論（1項目20〜60文字、箇条書き、該当なしは空配列）
+- pending: 結論が出ずに次回以降に持ち越された事項（同上）
+- todos: 誰かが実施すべきアクション。可能なら「誰が／何を／いつまでに」を含める（同上）
+
+【議事録】
 {text}
 
-出力フォーマット:
+【出力JSONフォーマット】
 {{"summary_short": "...", "summary_long": "...", "decisions": ["..."], "pending": ["..."], "todos": ["..."]}}"""
     resp = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=[{"role": "user", "content": prompt}],
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
         response_format={"type": "json_object"},
-        temperature=0.2,
+        temperature=0.3,
     )
     data = json.loads(resp.choices[0].message.content)
     return {
@@ -134,8 +146,32 @@ def extract_analysis(text):
         merged["decisions"] = list(dict.fromkeys(merged["decisions"]))
         merged["pending"] = list(dict.fromkeys(merged["pending"]))
         merged["todos"] = list(dict.fromkeys(merged["todos"]))
-        merged["summary_short"] = summaries_short[0] if summaries_short else ""
-        merged["summary_long"] = "\n\n".join(summaries_long)
+        # 各チャンクの要約をまとめて、最終要約を1パスで再生成
+        combined = "\n".join(summaries_long)
+        try:
+            time.sleep(12)
+            client = Groq(api_key=GROQ_API_KEY)
+            final = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": "あなたは議事録要約者です。複数の部分要約を統合し、重複を排除して一つの自然な要約に再構成してください。原文コピーは禁止です。JSONのみ返してください。"},
+                    {"role": "user", "content": f"""次の部分要約群を統合してください。
+
+【部分要約】
+{combined}
+
+【出力】
+{{"summary_short": "60〜100文字の総括", "summary_long": "300〜500文字の自然な統合要約"}}"""}
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.3,
+            )
+            fin = json.loads(final.choices[0].message.content)
+            merged["summary_short"] = fin.get("summary_short", "") or (summaries_short[0] if summaries_short else "")
+            merged["summary_long"] = fin.get("summary_long", "") or combined
+        except Exception:
+            merged["summary_short"] = summaries_short[0] if summaries_short else ""
+            merged["summary_long"] = combined
         return merged
     except Exception as e:
         return {"summary_short": "", "summary_long": "", "decisions": [], "pending": [], "todos": [], "error": str(e)}
