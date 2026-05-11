@@ -181,11 +181,17 @@ with tab1:
     audio_file = st.file_uploader("🎙️ 音声ファイルから文字起こし（任意）",
         type=["mp3", "wav", "m4a", "mp4", "ogg", "webm"])
     if audio_file:
+        size_mb = audio_file.size / (1024 * 1024)
+        st.caption(f"ファイルサイズ: {size_mb:.1f} MB")
         if st.button("📝 文字起こしする"):
-            with st.spinner("文字起こし中..."):
-                transcribed = transcribe_audio(audio_file.read(), audio_file.name)
-                st.session_state[f"transcribed_{fk}"] = transcribed
-                st.rerun()
+            try:
+                with st.spinner("文字起こし中..."):
+                    transcribed = transcribe_audio(audio_file.read(), audio_file.name)
+                    st.session_state[f"transcribed_{fk}"] = transcribed
+                    st.rerun()
+            except Exception as e:
+                st.error(f"文字起こしエラー: {type(e).__name__}: {e}")
+                st.error(f"詳細: {getattr(e, 'message', '')} / {getattr(e, 'status_code', '')} / {getattr(e, 'body', '')}")
 
     # 文字起こし結果があれば content に反映
     if f"transcribed_{fk}" in st.session_state:
