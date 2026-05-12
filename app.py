@@ -79,26 +79,38 @@ def extract_tags(text, top_n=5):
 # 議事録から決定事項・保留事項・ToDoを抽出
 def _extract_one(text):
     client = Groq(api_key=GROQ_API_KEY)
-    system_prompt = """あなたは熟練した議事録要約者です。以下のルールを厳守してください:
-- 原文の文をそのままコピーしてはいけません。必ず自分の言葉で再構成すること
-- 「誰が・何を・なぜ」を補い、文脈が分かる文章にまとめる
-- 専門用語は残しつつ、冗長な言い回しや雑談は削る
-- 重複する内容は一つにまとめる
+    system_prompt = """あなたは熟練した議事録要約者です。社内共有でそのまま使える実務的な要約を作成します。
+
+【要約ルール】
+- 文字起こし特有の言いよどみ、重複、脱線、相づち、言い直しは省いて整理する
+- 明らかな誤変換・誤認識は、文脈上ほぼ確実な場合のみ自然な表現に補正する
+- 補正に確信が持てない固有名詞・専門用語は無理に直さず、そのまま残すか「要確認」と明記する
+- 発言内容を勝手に補完・推測しない
+- 「決定したこと」と「まだ議論中のこと」を必ず分ける
+- 自然で実務にそのまま使える日本語でまとめる
+- AIっぽい不自然な表現は避ける
+- 冗長にせず、ただし情報不足にならないように整理する
+- 同じ内容が繰り返し出てくる場合は一つに統合する
+- 会議全体の背景や意図が分かる場合は、短く補足してよい
 - 出力は必ず指定したJSONフォーマットのみ（説明文・前置き・コードブロックは一切不要）"""
-    user_prompt = f"""以下の議事録から、次の項目を抽出・要約してください。
+    user_prompt = f"""以下は会議の文字起こしです。この内容をもとに、社内共有でそのまま使える実務的な要約を作成してください。
 
 【出力項目】
-- summary_short: 議事録全体の主旨を1〜2文で表す要約（60〜100文字、原文の抜き書きは禁止）
-- summary_long: 議事録の流れと結論が分かる詳細要約（300〜500文字、複数段落可、必ず自分の言葉で再構成）
-- decisions: 会議で確定した結論（1項目20〜60文字、箇条書き、該当なしは空配列）
-- pending: 結論が出ずに次回以降に持ち越された事項（同上）
-- todos: 誰かが実施すべきアクション。可能なら「誰が／何を／いつまでに」を含める（同上）
+- overview: 会議概要（この会議が何についての会議だったかを2〜4文で要約）
+- key_points: 要点整理（論点ごとの箇条書き。重要な背景や方針転換があれば明記）
+- decisions: 決定事項（この会議で確定した内容のみ。決まっていない内容は含めない。ない場合は空配列）
+- concerns: 課題・懸念点（未整理の論点、今後詰める必要がある点、運用上の不安や説明不足など）
+- todos: 今後のアクション（やるべきことの箇条書き。発言内に担当者・期限があれば反映し、不明なら「担当未定」「期限未定」と記載）
+- unconfirmed: 未確定事項（方針は出ているがまだ確定していないこと）
+- oneliner: 一言まとめ（会議全体を1〜2文で簡潔に）
 
-【議事録】
+【文字起こし】
+-----
 {text}
+-----
 
 【出力JSONフォーマット】
-{{"summary_short": "...", "summary_long": "...", "decisions": ["..."], "pending": ["..."], "todos": ["..."]}}"""
+{{"overview": "...", "key_points": ["..."], "decisions": ["..."], "concerns": ["..."], "todos": ["..."], "unconfirmed": ["..."], "oneliner": "..."}}"""
     resp = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[
@@ -110,11 +122,13 @@ def _extract_one(text):
     )
     data = json.loads(resp.choices[0].message.content)
     return {
-        "summary_short": data.get("summary_short", "") or "",
-        "summary_long": data.get("summary_long", "") or "",
+        "overview": data.get("overview", "") or "",
+        "key_points": data.get("key_points", []) or [],
         "decisions": data.get("decisions", []) or [],
-        "pending": data.get("pending", []) or [],
+        "concerns": data.get("concerns", []) or [],
         "todos": data.get("todos", []) or [],
+        "unconfirmed": data.get("unconfirmed", []) or [],
+        "oneliner": data.get("oneliner", "") or "",
     }
 
 def extract_analysis(text):
@@ -125,83 +139,125 @@ def extract_analysis(text):
             return _extract_one(text)
         # 長文：分割→抽出→マージ
         chunks = [text[i:i+MAX_CHARS] for i in range(0, len(text), MAX_CHARS)]
-        merged = {"summary_short": "", "summary_long": "", "decisions": [], "pending": [], "todos": []}
-        summaries_long = []
-        summaries_short = []
+        merged = {"overview": "", "key_points": [], "decisions": [], "concerns": [],
+                  "todos": [], "unconfirmed": [], "oneliner": ""}
+        overviews = []
+        oneliners = []
         progress = st.progress(0.0, text=f"長文のため{len(chunks)}分割で抽出中...")
         for idx, ch in enumerate(chunks):
             if idx > 0:
                 time.sleep(12)  # TPM制限対策
             part = _extract_one(ch)
-            if part.get("summary_short"):
-                summaries_short.append(part["summary_short"])
-            if part.get("summary_long"):
-                summaries_long.append(part["summary_long"])
+            if part.get("overview"):
+                overviews.append(part["overview"])
+            if part.get("oneliner"):
+                oneliners.append(part["oneliner"])
+            merged["key_points"].extend(part.get("key_points", []))
             merged["decisions"].extend(part.get("decisions", []))
-            merged["pending"].extend(part.get("pending", []))
+            merged["concerns"].extend(part.get("concerns", []))
             merged["todos"].extend(part.get("todos", []))
+            merged["unconfirmed"].extend(part.get("unconfirmed", []))
             progress.progress((idx + 1) / len(chunks), text=f"抽出中 {idx+1}/{len(chunks)}")
         progress.empty()
         # 重複削除（順序保持）
-        merged["decisions"] = list(dict.fromkeys(merged["decisions"]))
-        merged["pending"] = list(dict.fromkeys(merged["pending"]))
-        merged["todos"] = list(dict.fromkeys(merged["todos"]))
-        # 各チャンクの要約をまとめて、最終要約を1パスで再生成
-        combined = "\n".join(summaries_long)
+        for k in ("key_points", "decisions", "concerns", "todos", "unconfirmed"):
+            merged[k] = list(dict.fromkeys(merged[k]))
+        # 最終統合パス：overview/oneliner を一本化
         try:
             time.sleep(12)
             client = Groq(api_key=GROQ_API_KEY)
             final = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=[
-                    {"role": "system", "content": "あなたは議事録要約者です。複数の部分要約を統合し、重複を排除して一つの自然な要約に再構成してください。原文コピーは禁止です。JSONのみ返してください。"},
-                    {"role": "user", "content": f"""次の部分要約群を統合してください。
+                    {"role": "system", "content": "複数の部分要約を統合し、重複を排除して自然な日本語に再構成してください。原文コピーは禁止。JSONのみ返答。"},
+                    {"role": "user", "content": f"""次は同じ会議を分割して要約したものです。会議概要と一言まとめを統合してください。
 
-【部分要約】
-{combined}
+【会議概要群】
+{chr(10).join(overviews)}
+
+【一言まとめ群】
+{chr(10).join(oneliners)}
 
 【出力】
-{{"summary_short": "60〜100文字の総括", "summary_long": "300〜500文字の自然な統合要約"}}"""}
+{{"overview": "2〜4文の会議概要", "oneliner": "1〜2文の総括"}}"""}
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.3,
             )
             fin = json.loads(final.choices[0].message.content)
-            merged["summary_short"] = fin.get("summary_short", "") or (summaries_short[0] if summaries_short else "")
-            merged["summary_long"] = fin.get("summary_long", "") or combined
+            merged["overview"] = fin.get("overview", "") or (overviews[0] if overviews else "")
+            merged["oneliner"] = fin.get("oneliner", "") or (oneliners[0] if oneliners else "")
         except Exception:
-            merged["summary_short"] = summaries_short[0] if summaries_short else ""
-            merged["summary_long"] = combined
+            merged["overview"] = overviews[0] if overviews else ""
+            merged["oneliner"] = oneliners[0] if oneliners else ""
         return merged
     except Exception as e:
-        return {"summary_short": "", "summary_long": "", "decisions": [], "pending": [], "todos": [], "error": str(e)}
+        return {"overview": "", "key_points": [], "decisions": [], "concerns": [],
+                "todos": [], "unconfirmed": [], "oneliner": "", "error": str(e)}
 
 def render_analysis(analysis):
     if not analysis or not isinstance(analysis, dict):
         return
-    summary_short = analysis.get("summary_short") or ""
-    summary_long = analysis.get("summary_long") or ""
-    decisions = analysis.get("decisions") or []
-    pending = analysis.get("pending") or []
-    todos = analysis.get("todos") or []
-    if not (summary_short or summary_long or decisions or pending or todos):
+    # 旧形式（summary_short/summary_long/pending）の互換表示
+    legacy = "summary_short" in analysis or "summary_long" in analysis or "pending" in analysis
+    if legacy:
+        if analysis.get("summary_short"):
+            st.info(f"📝 {analysis['summary_short']}")
+        if analysis.get("summary_long"):
+            with st.expander("詳細要約を表示"):
+                st.write(analysis["summary_long"])
+        if analysis.get("decisions"):
+            st.markdown("**✅ 決定事項**")
+            for x in analysis["decisions"]:
+                st.markdown(f"- {x}")
+        if analysis.get("pending"):
+            st.markdown("**⏸️ 保留事項**")
+            for x in analysis["pending"]:
+                st.markdown(f"- {x}")
+        if analysis.get("todos"):
+            st.markdown("**📌 ToDo**")
+            for x in analysis["todos"]:
+                st.markdown(f"- {x}")
         return
-    if summary_short:
-        st.info(f"📝 {summary_short}")
-    if summary_long:
-        with st.expander("詳細要約を表示"):
-            st.write(summary_long)
+
+    overview = analysis.get("overview") or ""
+    key_points = analysis.get("key_points") or []
+    decisions = analysis.get("decisions") or []
+    concerns = analysis.get("concerns") or []
+    todos = analysis.get("todos") or []
+    unconfirmed = analysis.get("unconfirmed") or []
+    oneliner = analysis.get("oneliner") or ""
+
+    if not any([overview, key_points, decisions, concerns, todos, unconfirmed, oneliner]):
+        return
+
+    if oneliner:
+        st.info(f"📝 {oneliner}")
+    if overview:
+        st.markdown("**🗂️ 会議概要**")
+        st.write(overview)
+    if key_points:
+        st.markdown("**📌 要点整理**")
+        for x in key_points:
+            st.markdown(f"- {x}")
     if decisions:
         st.markdown("**✅ 決定事項**")
         for x in decisions:
             st.markdown(f"- {x}")
-    if pending:
-        st.markdown("**⏸️ 保留事項**")
-        for x in pending:
+    else:
+        st.markdown("**✅ 決定事項**")
+        st.caption("今回確定した決定事項は限定的")
+    if concerns:
+        st.markdown("**⚠️ 課題・懸念点**")
+        for x in concerns:
             st.markdown(f"- {x}")
     if todos:
-        st.markdown("**📌 ToDo**")
+        st.markdown("**🚀 今後のアクション（ToDo）**")
         for x in todos:
+            st.markdown(f"- {x}")
+    if unconfirmed:
+        st.markdown("**⏸️ 未確定事項**")
+        for x in unconfirmed:
             st.markdown(f"- {x}")
 
 def cosine_sim(a, b):
