@@ -195,7 +195,58 @@ def extract_analysis(text):
         return {"overview": "", "key_points": [], "decisions": [], "concerns": [],
                 "todos": [], "unconfirmed": [], "oneliner": "", "error": str(e)}
 
-def render_analysis(analysis):
+def analysis_to_text(analysis):
+    """要約データをコピペしやすいプレーンテキスト形式に整形"""
+    if not analysis or not isinstance(analysis, dict):
+        return ""
+    lines = []
+    # 旧形式
+    if "summary_short" in analysis or "summary_long" in analysis or "pending" in analysis:
+        if analysis.get("summary_short"):
+            lines.append(f"【一言要約】\n{analysis['summary_short']}\n")
+        if analysis.get("summary_long"):
+            lines.append(f"【詳細要約】\n{analysis['summary_long']}\n")
+        if analysis.get("decisions"):
+            lines.append("【決定事項】")
+            lines += [f"・{x}" for x in analysis["decisions"]]
+            lines.append("")
+        if analysis.get("pending"):
+            lines.append("【保留事項】")
+            lines += [f"・{x}" for x in analysis["pending"]]
+            lines.append("")
+        if analysis.get("todos"):
+            lines.append("【ToDo】")
+            lines += [f"・{x}" for x in analysis["todos"]]
+        return "\n".join(lines).strip()
+    # 新形式
+    if analysis.get("oneliner"):
+        lines.append(f"【一言まとめ】\n{analysis['oneliner']}\n")
+    if analysis.get("overview"):
+        lines.append(f"【会議概要】\n{analysis['overview']}\n")
+    if analysis.get("key_points"):
+        lines.append("【要点整理】")
+        lines += [f"・{x}" for x in analysis["key_points"]]
+        lines.append("")
+    lines.append("【決定事項】")
+    if analysis.get("decisions"):
+        lines += [f"・{x}" for x in analysis["decisions"]]
+    else:
+        lines.append("・今回確定した決定事項は限定的")
+    lines.append("")
+    if analysis.get("concerns"):
+        lines.append("【課題・懸念点】")
+        lines += [f"・{x}" for x in analysis["concerns"]]
+        lines.append("")
+    if analysis.get("todos"):
+        lines.append("【今後のアクション（ToDo）】")
+        lines += [f"・{x}" for x in analysis["todos"]]
+        lines.append("")
+    if analysis.get("unconfirmed"):
+        lines.append("【未確定事項】")
+        lines += [f"・{x}" for x in analysis["unconfirmed"]]
+    return "\n".join(lines).strip()
+
+def render_analysis(analysis, copy_key=None):
     if not analysis or not isinstance(analysis, dict):
         return
     # 旧形式（summary_short/summary_long/pending）の互換表示
@@ -218,6 +269,10 @@ def render_analysis(analysis):
             st.markdown("**📌 ToDo**")
             for x in analysis["todos"]:
                 st.markdown(f"- {x}")
+        copy_text = analysis_to_text(analysis)
+        if copy_text:
+            with st.expander("📋 要約をコピー（右上のアイコンをクリック）"):
+                st.code(copy_text, language=None)
         return
 
     overview = analysis.get("overview") or ""
@@ -259,6 +314,12 @@ def render_analysis(analysis):
         st.markdown("**⏸️ 未確定事項**")
         for x in unconfirmed:
             st.markdown(f"- {x}")
+
+    # コピー用テキスト（右上のアイコンでクリップボードに一発コピー可能）
+    copy_text = analysis_to_text(analysis)
+    if copy_text:
+        with st.expander("📋 要約をコピー（右上のアイコンをクリック）"):
+            st.code(copy_text, language=None)
 
 def cosine_sim(a, b):
     a, b = np.array(a), np.array(b)
