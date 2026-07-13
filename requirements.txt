@@ -5,3 +5,4 @@ groq
 janome
 numpy
 pandas
+pywebview
