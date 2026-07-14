@@ -1,6 +1,7 @@
 import streamlit as st
 from groq import Groq
 import pandas as pd
+import platform
 import subprocess
 import tempfile
 import os
@@ -11,12 +12,25 @@ GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 APP_PASSWORD = st.secrets["APP_PASSWORD"]
 
 # フォントプリセット（表示名 → フォントファミリー名）
-# packages.txt でインストールされるフォントパッケージに対応
-FONT_PRESETS = {
-    "ゴシック体（標準）": "Noto Sans CJK JP",
-    "明朝体": "IPAexMincho",
-    "丸ゴシック（ポップ）": "M PLUS 1",
-}
+# 実行環境ごとに標準搭載されている（または packages.txt で導入した）フォントを使う
+if platform.system() == "Darwin":
+    FONT_PRESETS = {
+        "ゴシック体（標準）": "Hiragino Sans",
+        "明朝体": "Hiragino Mincho ProN",
+        "丸ゴシック（ポップ）": "Hiragino Maru Gothic ProN",
+    }
+elif platform.system() == "Windows":
+    FONT_PRESETS = {
+        "ゴシック体（標準）": "Yu Gothic",
+        "明朝体": "Yu Mincho",
+        "丸ゴシック（ポップ）": "UD Digital Kyokasho N-R",
+    }
+else:
+    FONT_PRESETS = {
+        "ゴシック体（標準）": "Noto Sans CJK JP",
+        "明朝体": "IPAexMincho",
+        "丸ゴシック（ポップ）": "M PLUS 1",
+    }
 
 POSITION_PRESETS = {
     "下部": 2,  # ASS Alignment: 2 = 下中央
